@@ -8,7 +8,7 @@ import signal
 
 
 class TelegramBot:
-    def __init__(self, token, polling_f=2, poll_sleep=0.1):
+    def __init__(self, token, polling_f=2, poll_sleep=0.1, pom_status_checking=1):
         """
         Initializing TelegramBot class
         Parameters
@@ -27,12 +27,14 @@ class TelegramBot:
         self.polling_f = polling_f
         self.loop_diff = polling_f**(-1)
         self.poll_sleep = poll_sleep
-        self.user_settings = None  # TODO
+        self.user_infos = self.open_pickle('all_users.pkl')
         self.user_records = None  # TODO
         self.leaderboard = None  # TODO
-        self.default_setting_dict = None  # TODO
+        self.default_setting_dict = self.open_pickle('default_setting_dict.pkl')
         self.active_poms = None  # TODO
-        self.last_responded_to = self.open_pickle('last_responded_to')  # TODO
+        self.last_responded_to = self.open_pickle('last_responded_to')
+        self.pom_status_checking = pom_status_checking
+        self.users_with_active_poms = []
 
         # register the original sigint so we can refer back to it later in code
         self.original_sigint = signal.getsignal(signal.SIGINT)
@@ -69,7 +71,7 @@ class TelegramBot:
                           headers={"Content-Type": "application/json"},
                           json=req_json)
         if r.status_code == 200:
-            logging.debug(f"Message sent to user {chat_id} with content {text}",
+            logging.debug(f"Message sent to user {self.user_infos[chat_id]['name']} with content {text}",
                           kwargs=kwargs,
                           text=text)
         else:
@@ -88,9 +90,11 @@ class TelegramBot:
             print(f"Adding {key} with val {val}")
             req_json[key] = val
 
+        t0 = time.time()
         r = requests.post(url=f'https://api.telegram.org/bot{self.token}/getUpdates',
                           headers={"Content-Type": "application/json"},
                           json=req_json)
+        logging.debug(f"getUpdates took {time.time() - t0}s")
 
         if r.status_code != 200:
             logging.error("Update unsuccessful",
@@ -106,18 +110,61 @@ class TelegramBot:
         try:
             logging.info("Polling started!")
             time_last = time.time()
+            last_pomstat_check = 9999
+
             while True:
+                # logging.debug("Poll started")
+                if time.time() - last_pomstat_check >= self.pom_status_checking and self.users_with_active_poms:
+                    logging.debug("User pomo updates")
+                    for user_id in self.users_with_active_poms:
+                        self.user_infos[user_id]['poms']['last_pom']['elapsed'] = \
+                            time.time() - self.user_infos[user_id]['poms']['last_pom']['last_status_change']
+                        logging.debug(
+                            f"{self.user_infos[user_id]['name']}: Ongoing for {self.user_infos[user_id]['poms']['last_pom']['elapsed']}s")
+                        if self.user_infos[user_id]['poms']['last_pom']['elapsed'] >= self.user_infos[user_id]['settings']['pom_length']:
+                            self.user_infos[user_id]['poms']['all_poms'] += 1
+                            self.user_infos[user_id]['poms']['foctime'] += self.user_infos[user_id]['settings']['pom_length']*60
+                            self.user_infos[user_id]['poms']['last_pom']['status'] = 'done'
+                            self.user_infos[user_id]['poms']['last_pom']['num'] += 1
+                            self.user_infos[user_id]['poms']['last_pom']['elapsed'] = 0
+                            self.users_with_active_poms.remove(user_id)
+                            self.send_message(chat_id=user_id, text="🍅 Congrats! You have finished your pomo! 🍅")
+                            logging.debug(f"Finished pomo from {self.user_infos[user_id]['name']}",
+                                          user_info_pom=self.user_infos[user_id]['poms'])
+
+                    last_pomstat_check = time.time()
+                    logging.debug("User updates finished")
+
                 if time.time() - time_last >= self.loop_diff:
-                    time_last = time.time()
+                    logging.debug("update pulled")
 
                     r = self.get_update()
+                    time_last = time.time()
 
                     for rec in r['result']:
+                        if rec['message']['from']['id'] not in self.user_infos:
+                            self.user_infos[rec['message']['from']['id']] = self.default_setting_dict.copy()
+                            self.user_infos[rec['message']['from']['id']]['name'] = rec['message']['from']['first_name']
+                            self.send_message(chat_id=rec['message']['from']['id'],
+                                              text=f"Hey {rec['message']['from']['first_name']}! It seems like you're "
+                                                   f"new here, let me initialize some settings for you.")
+
+
                         if 'text' in rec['message']:
-                            logging.debug(f"Received message {rec['message']['text']}",
-                                          text=rec['message']['text'])
+                            logging.debug(f"Received message {rec['message']['text']} from "
+                                          f"{rec['message']['from']['first_name']}",
+                                          text=rec['message']['text'],
+                                          message=rec)
                             self.send_message(chat_id=rec['message']['from']['id'],
                                               text=rec['message']['text'])
+
+                            if "startpom" in rec['message']['text']:
+                                self.send_message(chat_id=rec['message']['from']['id'],
+                                                  text="Your pomodoro has been started!")
+                                logging.debug(f"Adding {rec['message']['from']['first_name']} to pom users list")
+                                self.users_with_active_poms.append(rec['message']['from']['id'])
+                                self.user_infos[rec['message']['from']['id']]['poms']['last_pom']['last_status_change'] = time.time()
+
                         else:
                             logging.warning(f"Received non text message.",
                                             text=rec['message'])
@@ -126,11 +173,15 @@ class TelegramBot:
                                               text=nontext)
 
                         self.last_responded_to = rec['update_id']
+
+                    logging.debug("GetUpdate finished")
+
                 else:
                     time.sleep(self.poll_sleep)
         except Exception:
             logging.error("Error occurred!",
                           exc_info=True, stack_info=True)
+            self.save_everything()
 
 
 
@@ -170,6 +221,7 @@ class TelegramBot:
 
     def save_everything(self):
         self.save_pickle('last_responded_to', self.last_responded_to)
+        self.save_pickle('all_users.pkl', self.user_infos)
 
     @staticmethod
     def logging_setup():
@@ -205,3 +257,6 @@ class TelegramBot:
     # TODO multi threaded
     # TODO init bot
     # TODO decorator for commands
+    # TODO get pomo status
+    # TODO auto start break?
+    # TODO async, threading?
