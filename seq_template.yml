@@ -1,0 +1,38 @@
+# This is the Python logging schema version (currently, only the value 1 is supported here).
+version: 1
+
+# Configure logging from scratch.
+disable_existing_loggers: True
+
+# Configure the root logger to use Seq
+root:
+  level: DEBUG
+  handlers:
+  - seq
+  - console
+
+handlers:
+# Log to STDOUT
+  console:
+    class: seqlog.structured_logging.ConsoleStructuredLogHandler
+    formatter: seq
+    level: 'DEBUG'
+
+# Log to Seq
+  seq:
+    class: seqlog.structured_logging.SeqLogHandler
+    formatter: seq
+
+    # Seq-specific settings (add any others you need, they're just kwargs for SeqLogHandler's constructor).
+    server_url: 'http://localhost:5341/'
+    api_key: 'put-your-api-key-here'
+    batch_size: 1
+    auto_flush_timeout: 1
+    level: 'DEBUG'
+
+    # Use a custom JSON encoder, if you need to.
+    json_encoder_class: json.encoder.JSONEncoder
+
+formatters:
+  seq:
+    style: '{'
