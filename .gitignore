@@ -127,3 +127,7 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+telegram_bot_token
+last_responded_to
+own_test_id
