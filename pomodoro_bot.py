@@ -177,21 +177,29 @@ class TelegramBot:
         for user_id in self.users_with_active_poms:
             self.user_infos[user_id]['poms']['last_pom']['elapsed'] = \
                 time.time() - self.user_infos[user_id]['poms']['last_pom']['last_status_change']
-            logging.debug(
-                f"{self.user_infos[user_id]['name']}: Ongoing for {self.user_infos[user_id]['poms']['last_pom']['elapsed']:2.0f}s",
-                type="pomo")
-            if self.user_infos[user_id]['poms']['last_pom']['elapsed'] >= self.user_infos[user_id]['settings'][
-                'pom_length']:
-                self.user_infos[user_id]['poms']['all_poms'] += 1
-                self.user_infos[user_id]['poms']['foctime'] += self.user_infos[user_id]['settings']['pom_length']
-                self.user_infos[user_id]['poms']['last_pom']['status'] = 'done'
-                self.user_infos[user_id]['poms']['last_pom']['num'] += 1
+            logging.debug(f"{self.user_infos[user_id]['name']}: Ongoing for "
+                          f"{self.user_infos[user_id]['poms']['last_pom']['elapsed']:2.0f}s",
+                          type="pomo")
+            if self.user_infos[user_id]['poms']['last_pom']['elapsed'] >= \
+                    self.user_infos[user_id]['poms']['last_pom']['current_timer_length']:
+
                 self.user_infos[user_id]['poms']['last_pom']['elapsed'] = 0
                 self.users_with_active_poms.remove(user_id)
-                self.send_message(chat_id=user_id, text="🍅 Congrats! You have finished your pomo! 🍅")
-                logging.debug(f"Finished pomo from {self.user_infos[user_id]['name']}",
-                              user_info_pom=self.user_infos[user_id]['poms'],
-                              type="pomo")
+
+                if self.user_infos[user_id]['poms']['last_pom']['type'] == 'pom':
+                    self.user_infos[user_id]['poms']['all_poms'] += 1
+                    self.user_infos[user_id]['poms']['foctime'] += self.user_infos[user_id]['settings']['pom_length']
+                    self.user_infos[user_id]['poms']['last_pom']['status'] = 'done'
+                    self.user_infos[user_id]['poms']['last_pom']['num'] += 1
+                    self.send_message(chat_id=user_id, text=f"🍅 Congrats! You have finished your pomo! 🍅")
+                    logging.debug(f"Finished pomo from {self.user_infos[user_id]['name']}",
+                                  user_info_pom=self.user_infos[user_id]['poms'],
+                                  type="pomo")
+
+                elif self.user_infos[user_id]['poms']['last_pom']['type'] == 'break':
+                    self.send_message(chat_id=user_id, text=f"Break's over! Time to work.")
+                    logging.debug(f"Finished break from {self.user_infos[user_id]['name']}",
+                                  type="pomo")
 
     def parse_incoming_messages(self, response):
         for rec in response['result']:
@@ -238,14 +246,41 @@ class TelegramBot:
         # TODO only text, no pictures!
         # TODO what about sticker?
 
-    def command_startpom(self, record):
-        self.send_message(chat_id=record['message']['from']['id'],
-                          text="Your pomodoro has been started!")
-        logging.debug(f"Adding '{record['message']['from']['first_name']}' to pom users list",
+    def start_timer(self, record, timer_length, timer_type):
+
+        from_id = record['message']['from']['id']
+
+        if from_id in self.users_with_active_poms:
+            self.send_message(chat_id=from_id,
+                              text="You already have a timer active! Wait until it runs down to start a new one.")
+            return
+
+        self.send_message(chat_id=from_id,
+                          text=f"Your {'pomodoro' if timer_type == 'pom' else timer_type} of length {timer_length}s "
+                               f"has been started!")
+        logging.debug(f"Adding '{record['message']['from']['first_name']}' to active pom users list for {timer_type}",
                       type="pomo")
-        self.users_with_active_poms.append(record['message']['from']['id'])
-        self.user_infos[record['message']['from']['id']]['poms']['last_pom'][
-            'last_status_change'] = time.time()
+        self.users_with_active_poms.append(from_id)
+        self.user_infos[from_id]['poms']['last_pom']['last_status_change'] = time.time()
+        self.user_infos[from_id]['poms']['last_pom']['type'] = timer_type
+        self.user_infos[from_id]['poms']['last_pom']['current_timer_length'] = timer_length
+
+    def command_startbreak(self, record):
+        from_id = record['message']['from']['id']
+
+        break_length = self.user_infos[from_id]['poms']['all_poms'] % 4
+
+        if break_length:
+            break_length = self.user_infos[from_id]['settings']['break_short']
+        else:
+            break_length = self.user_infos[from_id]['settings']['break_long']
+
+        self.start_timer(record, timer_type='break',
+                         timer_length=break_length)
+
+    def command_startpom(self, record):
+        self.start_timer(record, timer_type='pom',
+                         timer_length=self.user_infos[record['message']['from']['id']]['settings']['pom_length'])
 
     def command_reset_stats(self, record):
         from_id = record['message']['from']['id']
@@ -253,6 +288,10 @@ class TelegramBot:
         self.user_infos[from_id]['poms']['foctime'] = 0
         self.send_message(chat_id=from_id,
                           text='Your stats have been reset!')
+
+    def command_current_pomo_debug(self, record):
+        for key, value in self.user_infos[record['message']['from']['id']]['poms']['last_pom'].items():
+            print(f"{key}: {value}")
 
     def command_stats(self, record):
         from_id = record['message']['from']['id']
@@ -312,3 +351,4 @@ class TelegramBot:
     # TODO get pomo status
     # TODO auto start break?
     # TODO async, threading?
+    # TODO encouragind messages after break, having list of them to cycle through
